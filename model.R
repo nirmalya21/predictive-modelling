@@ -1,61 +1,70 @@
-# Required packages
+# Load necessary libraries
 library(tidyverse)
-library(forecast)
 library(mlogit)
 library(lubridate)
+library(zoo)
+library(forecast)
+library(readr)
 
-# Load dataset
-data <- read.csv("product_choice_time_series.csv")
+# -----------------------------
+# 1. Load and Prepare Data
+# -----------------------------
+# Read CSV (Make sure the CSV is named correctly)
+data <- read_csv("product_choice_time_series.csv")
 
-# Convert quarter to date
-data$quarter <- as.yearqtr(data$quarter)
+# Convert 'quarter' to year-quarter format
+data$quarter <- as.yearqtr(data$quarter, format = "%Y Q%q")
 
-# ----------- TIME SERIES FORECASTING PART -------------
-
-# Forecast revenue per product
-forecast_list <- list()
-
-for (prod in unique(data$product)) {
-  ts_data <- data %>%
-    filter(product == prod) %>%
-    group_by(quarter) %>%
-    summarise(revenue = sum(revenue)) %>%
-    arrange(quarter)
-  
-  ts_rev <- ts(ts_data$revenue, frequency = 4)
-  fit <- auto.arima(ts_rev)
-  fc <- forecast(fit, h = 2)  # forecast next 2 quarters
-  forecast_list[[prod]] <- data.frame(
-    quarter = seq(max(ts_data$quarter) + 0.25, by = 0.25, length.out = 2),
-    product = prod,
-    revenue_forecast = fc$mean
-  )
-}
-
-revenue_forecasts <- bind_rows(forecast_list)
-
-# Merge back into dataset (only use known quarters for prediction)
+# Add observation ID for mlogit
 data <- data %>%
-  left_join(revenue_forecasts, by = c("quarter", "product")) %>%
-  mutate(
-    revenue_final = ifelse(is.na(revenue_forecast), revenue, revenue_forecast)
-  )
+  mutate(obs_id = row_number(),
+         customer_id = as.factor(customer_id),
+         product = as.factor(product))
 
-# ----------- MULTINOMIAL LOGIT MODEL ------------------
+# -----------------------------
+# 2. Prepare Data for mlogit
+# -----------------------------
+mlogit_data <- mlogit.data(data,
+                           choice = "choice",
+                           shape = "long",
+                           alt.var = "product",
+                           id.var = "customer_id",
+                           chid.var = "obs_id")
 
-# Prepare data for mlogit
-mlogit_data <- mlogit.data(
-  data,
-  choice = "choice",
-  shape = "long",
-  chid.var = "customer_id",
-  alt.var = "product"
-)
+# Fit Multinomial Logit Model
+mlogit_model <- mlogit(choice ~ sales + revenue + marketing_score | age + region,
+                       data = mlogit_data)
 
-# Fit model using forecasted revenue and sales + demographics
-model <- mlogit(
-  choice ~ revenue_final + sales + age + marketing_score | 0,
-  data = mlogit_data
-)
+# Print summary
+cat("\n--- Multinomial Logit Model Summary ---\n")
+print(summary(mlogit_model))
 
-summary(model)
+# -----------------------------
+# 3. Time Series Forecasting
+# -----------------------------
+# Aggregate total revenue by quarter
+ts_data <- data %>%
+  group_by(quarter) %>%
+  summarise(total_revenue = sum(revenue, na.rm = TRUE)) %>%
+  arrange(quarter)
+
+# Create time series object
+revenue_ts <- ts(ts_data$total_revenue, 
+                 start = c(year(min(ts_data$quarter)), quarter(min(ts_data$quarter))), 
+                 frequency = 4)
+
+# Fit ARIMA model
+arima_model <- auto.arima(revenue_ts)
+
+# Print ARIMA model summary
+cat("\n--- ARIMA Model Summary ---\n")
+print(summary(arima_model))
+
+# Forecast next 4 quarters
+forecast_result <- forecast(arima_model, h = 4)
+
+# Plot forecast
+autoplot(forecast_result) + 
+  ggtitle("Forecasted Revenue for Next 4 Quarters") +
+  xlab("Quarter") + ylab("Revenue")
+
