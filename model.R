@@ -1,67 +1,52 @@
-# Load necessary libraries
-library(tidyverse)
-library(mlogit)
-library(lubridate)
-library(zoo)
-library(forecast)
+# === Load Required Libraries ===
+library(tidyverse)     # includes dplyr, ggplot2, etc.
+library(mlogit)        # multinomial logistic regression
+library(lubridate)     # time/date handling
+library(forecast)      # ARIMA modeling
+library(tsibble)       # time series data frame
 library(readr)
+libray(ggplot)
+library(zoo)
 
-# -----------------------------
-# 1. Load and Prepare Data
-# -----------------------------
-# Read CSV (Make sure the CSV is named correctly)
-data <- read_csv("product_choice_time_series.csv")
+# === Load the dataset ===
+df <- read_csv("product_choice_time_series.csv")
 
-# Convert 'quarter' to year-quarter format
-data$quarter <- as.yearqtr(data$quarter, format = "%Y Q%q")
+# === Data Cleaning and Preprocessing ===
+df <- df %>%
+  mutate(
+    customer_id = as.factor(customer_id),
+    product = as.factor(product),
+    quarter = as.yearqtr(quarter),
+    choice = as.logical(choice)  # ensure it's binary TRUE/FALSE
+  )
 
-# Add observation ID for mlogit
-data <- data %>%
-  mutate(obs_id = row_number(),
-         customer_id = as.factor(customer_id),
-         product = as.factor(product))
+# === Prepare Data for mlogit ===
+mlogit_data <- mlogit.data(df, choice = "choice", shape = "long",
+                           chid.var = "customer_id", alt.var = "product",
+                           id.var = "customer_id")
 
-# -----------------------------
-# 2. Prepare Data for mlogit
-# -----------------------------
-mlogit_data <- mlogit.data(data,
-                           choice = "choice",
-                           shape = "long",
-                           alt.var = "product",
-                           id.var = "customer_id",
-                           chid.var = "obs_id")
+# === Fit Multinomial Logit Model ===
+mlogit_model <- mlogit(choice ~ sales + revenue + age + marketing_score | 0, data = mlogit_data)
+summary(mlogit_model)
 
-# Fit Multinomial Logit Model
-mlogit_model <- mlogit(choice ~ sales + revenue + marketing_score | age + region,
-                       data = mlogit_data)
+# === Time Series Forecasting with ARIMA (on total revenue by quarter) ===
 
-# Print summary
-cat("\n--- Multinomial Logit Model Summary ---\n")
-print(summary(mlogit_model))
-
-# -----------------------------
-# 3. Time Series Forecasting
-# -----------------------------
-# Aggregate total revenue by quarter
-ts_data <- data %>%
+# Aggregate revenue by quarter
+ts_data <- df %>%
   group_by(quarter) %>%
   summarise(total_revenue = sum(revenue, na.rm = TRUE)) %>%
   arrange(quarter)
 
 # Create time series object
-revenue_ts <- ts(ts_data$total_revenue, 
-                 start = c(year(min(ts_data$quarter)), quarter(min(ts_data$quarter))), 
-                 frequency = 4)
+revenue_ts <- ts(ts_data$total_revenue, start = c(2022, 1), frequency = 4)
 
 # Fit ARIMA model
 arima_model <- auto.arima(revenue_ts)
-
-# Print ARIMA model summary
-cat("\n--- ARIMA Model Summary ---\n")
-print(summary(arima_model))
+summary(arima_model)
 
 # Forecast next 4 quarters
 forecast_result <- forecast(arima_model, h = 4)
+plot(forecast_result, main = "Revenue Forecast for Next 4 Quarters")
 
 # Plot forecast
 autoplot(forecast_result) + 
