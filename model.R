@@ -5,8 +5,8 @@ library(lubridate)     # time/date handling
 library(forecast)      # ARIMA modeling
 library(tsibble)       # time series data frame
 library(readr)
-libray(ggplot)
-library(zoo)
+library(ggplot2)       # correct library name
+library(zoo)           # for as.yearqtr()
 
 # === Load the dataset ===
 df <- read_csv("product_choice_time_series.csv")
@@ -20,10 +20,17 @@ df <- df %>%
     choice = as.logical(choice)  # ensure it's binary TRUE/FALSE
   )
 
+# ✅ Check: Multinomial logit requires **exactly two products per customer per choice**
+# Remove customers who do not have exactly 2 alternatives (required by mlogit)
+valid_customers <- df %>%
+  group_by(customer_id, quarter) %>%
+  filter(n_distinct(product) == 2) %>%
+  ungroup()
+
 # === Prepare Data for mlogit ===
-mlogit_data <- mlogit.data(df, choice = "choice", shape = "long",
-                           chid.var = "customer_id", alt.var = "product",
-                           id.var = "customer_id")
+mlogit_data <- mlogit.data(valid_customers,
+                           choice = "choice", shape = "long",
+                           chid.var = "customer_id", alt.var = "product")
 
 # === Fit Multinomial Logit Model ===
 mlogit_model <- mlogit(choice ~ sales + revenue + age + marketing_score | 0, data = mlogit_data)
@@ -38,7 +45,9 @@ ts_data <- df %>%
   arrange(quarter)
 
 # Create time series object
-revenue_ts <- ts(ts_data$total_revenue, start = c(2022, 1), frequency = 4)
+start_year <- year(min(ts_data$quarter))
+start_quarter <- quarter(min(ts_data$quarter))
+revenue_ts <- ts(ts_data$total_revenue, start = c(start_year, start_quarter), frequency = 4)
 
 # Fit ARIMA model
 arima_model <- auto.arima(revenue_ts)
@@ -46,10 +55,10 @@ summary(arima_model)
 
 # Forecast next 4 quarters
 forecast_result <- forecast(arima_model, h = 4)
-plot(forecast_result, main = "Revenue Forecast for Next 4 Quarters")
 
 # Plot forecast
 autoplot(forecast_result) + 
   ggtitle("Forecasted Revenue for Next 4 Quarters") +
   xlab("Quarter") + ylab("Revenue")
+
 
